@@ -1,0 +1,17 @@
+# Cookies & state (sensitive)
+data/baixing_state.json
+data/baixing_state.json.bak
+/tmp/baixing_state.json
+
+# Generated images
+/home/zng/baixing_images/
+*.png
+!config/*.png
+
+# Logs
+*.log
+*.jsonl
+
+# Backups
+backups/
+*.bak
