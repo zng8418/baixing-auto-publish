@@ -6,7 +6,11 @@
       python3 baixing_publisher.py --skip-images [day_number]  # 跳过图片生成/上传
 输出最后一行: LINK:xxx 或 FAILED:xxx（供cron脚本解析）
 """
-import sys, json, os, time, random, re, subprocess
+import sys, json, os, time, random, re, subprocess, io
+# Force UTF-8 output on Windows (GBK can't handle emoji)
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -32,6 +36,39 @@ def get_today_schedule(config):
     else:
         day = time.localtime().tm_wday + 1
         if day > 7: day = 7
+
+    # SEO 动态内容生成（优先）
+    seo_cfg = config.get('seo_content', {})
+    seo_mode = seo_cfg.get('mode', 'fixed')
+
+    if seo_cfg.get('enabled') and seo_mode in ('dynamic', 'hybrid'):
+        try:
+            # 动态导入 SEO 生成器
+            sys.path.insert(0, '/home/zng')
+            from baixing_seo_content import SEOContentGenerator
+            gen = SEOContentGenerator()
+            seo_result = gen.generate(day)
+            schedule = {
+                'day': day,
+                'day_name': ['周一','周二','周三','周四','周五','周六','周日'][day-1],
+                'title': seo_result['title'],
+                'title_id': f"SEO-{seo_result['content_hash']}",
+                'description': seo_result['description'],
+            }
+            print(f"  📊 SEO动态内容: 评分{seo_result['seo_score']}/100, 指纹{seo_result['content_hash']}")
+            for d in seo_result.get('seo_details', []):
+                print(f"    {d}")
+            return schedule, day
+        except Exception as e:
+            print(f"  ⚠️ SEO动态生成失败: {e}")
+            if seo_mode == 'dynamic':
+                # pure dynamic 模式下失败则退出
+                print(f"  ❌ SEO模式为dynamic，无法回退到固定内容")
+                sys.exit(4)
+            # hybrid 模式下回退到固定内容
+            print(f"  ↩️ 回退到固定内容模式")
+
+    # 固定内容（fallback）
     for s in config['schedule']:
         if s['day'] == day:
             return s, day
@@ -841,24 +878,26 @@ def get_published_links(page):
     page.goto('https://www.baixing.com/wo/posts', wait_until='domcontentloaded', timeout=15000)
     time.sleep(5)
 
-    # 找帖子链接 - 尝试多种模式
+    # 找帖子链接 - 优先找文章详情页链接（含adId的.html）
     links = page.evaluate("""() => {
         const results = [];
-        // 找所有包含 /ershoufang/ 的链接
-        document.querySelectorAll('a[href*="ershoufang"]').forEach(a => {
-            results.push({text: a.textContent.trim().substring(0, 60), href: a.href});
-        });
-        // 找所有包含 .html 的链接（文章页）
-        document.querySelectorAll('a[href$=".html"]').forEach(a => {
-            if (a.href.includes('baixing.com') && !a.href.includes('fabu')) {
-                results.push({text: a.textContent.trim().substring(0, 60), href: a.href});
+        const seen = new Set();
+        // 优先找 /ershoufang/aXXXXX.html 格式的文章链接
+        document.querySelectorAll('a[href*=\"ershoufang/a\"][href$=\".html\"]').forEach(a => {
+            const href = a.href;
+            if (!seen.has(href)) {
+                seen.add(href);
+                results.push({text: a.textContent.trim().substring(0, 60), href});
             }
         });
-        // 找帖子列表项
-        document.querySelectorAll('.my-post-item, .post-item, .ad-item, .listing-item, [class*="post-item"], [class*="adItem"]').forEach(el => {
-            const a = el.querySelector('a');
-            if (a && a.href) {
-                results.push({text: a.textContent.trim().substring(0, 60), href: a.href});
+        // 补充其他文章链接
+        document.querySelectorAll('a[href$=\".html\"]').forEach(a => {
+            if (a.href.includes('baixing.com') && a.href.includes('/a') && !a.href.includes('fabu')) {
+                const href = a.href;
+                if (!seen.has(href)) {
+                    seen.add(href);
+                    results.push({text: a.textContent.trim().substring(0, 60), href});
+                }
             }
         });
         return results;
@@ -1044,12 +1083,19 @@ def main():
         # ===== Phase 4: 提交 =====
         success, reason, final_url = submit_form(page)
 
-        # 获取文章链接
+        # 获取文章链接 — 优先从成功页URL提取adId构造
         article_link = ""
         if success:
-            links = get_published_links(page)
-            if links:
-                article_link = links[0]['href']
+            # 方法1: 从成功页URL直接提取adId
+            ad_id_match = re.search(r'adId=(\d+)', final_url)
+            if ad_id_match:
+                article_link = f"https://shenzhen.baixing.com/ershoufang/a{ad_id_match.group(1)}.html"
+                print(f"  ✅ 文章链接（从adId构造）: {article_link}")
+            else:
+                # 方法2: 从"我的发布"页面提取
+                links = get_published_links(page)
+                if links:
+                    article_link = links[0]['href']
 
         # 保存cookie（同时同步到技能目录永久备份）
         ctx.storage_state(path=STATE_PATH)
