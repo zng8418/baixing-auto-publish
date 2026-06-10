@@ -479,13 +479,63 @@ TypeError: Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormE
 - `data/baixing_state.json` - Cookie 状态（永久备份，git 忽略）
 
 ### 4. 关键文件路径
-- 发布脚本: `/home/zng/baixing_publisher.py` (v4, 集成图片)
+- 发布脚本: `/home/zng/baixing_publisher.py` (v4, 集成图片+SEO)
 - 图片生成: `/home/zng/baixing_image_gen.py` (V3 动态)
-- 发布配置: `/home/zng/baixing_publish_config.json` (7天 + 联系方式 + image_generation.v3_dynamic)
+- **SEO内容生成**: `/home/zng/baixing_seo_content.py` (v1.0 SEO关键词优化引擎)
+- 发布配置: `/home/zng/baixing_publish_config.json` (7天 + SEO + 联系方式 + image_generation.v3_dynamic)
+- SEO历史记录: `/home/zng/baixing_seo_history.jsonl`
 - Cookie 状态: `/home/zng/.hermes/skills/automation/baixing-auto-publish/data/baixing_state.json`
 - 发布日志: `/home/zng/baixing_publish_log.jsonl`
 - 截图目录: `/tmp/baixing_screenshots/`
 - 图片输出: `/home/zng/baixing_images/day{1-7}/`
+
+### 6. SEO 关键词优化引擎 (v1.0, 2026-06-10 新增)
+
+**功能**: 每次发布自动生成 SEO 优化的标题和描述，替代固定 7 天内容。
+
+**关键词体系**:
+| 类别 | 数量 | 示例 |
+|------|------|------|
+| 核心关键词 | 10 | 石岩统建楼, 石岩二手房, 宝安石岩小产权... |
+| 长尾关键词 | 20 | 石岩统建楼4房, 石岩地铁口二手房, 石岩大绿本统建楼... |
+| 场景词 | 8类40+ | 地铁通勤/投资理财/家庭居住/产权安全/装修自由/生活便利/价格优势/位置区域 |
+| 标题模板 | 8种 | 区域+属性+价格, 交通+属性+卖点, 产权+区域+属性... |
+| 描述模板 | 7板块 | 开头/基本信息/交通/周边/亮点/适合人群/CTA |
+
+**SEO 评分标准** (0-100):
+- 标题长度 8-30字: 15分
+- 标题含核心关键词: 20分
+- 标题含数字: 10分
+- 描述长度 300-3000字: 10分
+- 关键词覆盖率: 15分
+- 结构完整性: 15分
+- 联系方式嵌入: 5分
+- 内容去重: 10分
+
+**实测效果** (2026-06-10):
+```
+Day 1  |  93 | 宝安石岩小产权4房120平128万
+Day 2  |  85 | 双地铁口宝安二手房4房南北通透
+Day 3  |  93 | 带大绿本宝安石岩村委统建楼4房120平
+Day 4  |  93 | 南北通透石岩村委统建楼4房仅128万
+Day 5  |  93 | 宝安石岩二手房120平业主直售128万
+Day 6  |  93 | 深圳石岩村委统建楼4房业主直售南北通透
+Day 7  |  93 | 深圳石岩统建楼4房120平电梯11楼
+去重: 7/7 唯一 | 标题含"石岩": 6/7
+```
+
+**配置模式**:
+- `mode: "dynamic"` — 纯动态，生成失败则停止发布
+- `mode: "fixed"` — 使用 schedule 中的固定内容（旧模式）
+- `mode: "hybrid"` — 优先动态，失败回退固定内容
+
+**CLI 命令**:
+```bash
+python3 baixing_seo_content.py          # 生成今天
+python3 baixing_seo_content.py 3        # 生成第3天
+python3 baixing_seo_content.py --all    # 预览7天
+python3 baixing_seo_content.py --keywords  # 查看关键词库
+```
 
 ### 5. 反规避检测设计
 | 维度 | 设计 | 检测风险 |
