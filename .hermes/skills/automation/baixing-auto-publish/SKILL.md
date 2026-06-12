@@ -172,10 +172,12 @@ triggers:
 - 页面有**两个** `textarea[name="content"]`
 - ✅ `textarea[name="content"][maxlength="5000"].first`
 
-### 6. 发布后获取文章链接
+### 发布后获取文章链接（2026-06-10 修复）
 - 成功页 URL: `fabu/success?adId=xxx`
 - 文章链接: `https://shenzhen.baixing.com/ershoufang/a{adId}.html`
 - 我的发布页: `https://www.baixing.com/wo/posts`（注意是 www 不是 shenzhen 子域）
+- **✅ 正确方法**：从成功页 URL 用正则 `adId=(\d+)` 提取 adId，直接构造文章链接
+- **❌ 旧方法**：从"我的发布"页面 scrape 链接 — 容易误取 fabu 页面链接（`www.baixing.com/fabu/ershoufang#fabulinkbtn`）
 
 ### 7. contactchecker
 - 提交前等 2-3 秒让联系方式检测完成
@@ -359,7 +361,20 @@ TargetClosedError: BrowserType.launch: Target page, context or browser has been 
 browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
 ```
 
-### 账号余额/免费额度检查（重要更新 2026-04-22）
+### Windows Python 编码 + 缓存陷阱（2026-06-10）
+
+**GBK 编码崩溃**：从 WSL 调用 `/mnt/d/Python313/python.exe` 时，`print()` 含 emoji 会抛 `UnicodeEncodeError: 'gbk' codec`。修复：脚本头部强制 UTF-8：
+```python
+import sys, io
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+```
+⚠️ `PYTHONIOENCODING=utf-8` 环境变量对 Windows Python 从 WSL 调用时**不生效**，必须在代码内设置。
+
+**`.pyc` 缓存陷阱**：WSL 中编辑 `.py` 文件后 `python3` 可能仍使用旧 `.pyc`。即使 `grep` 确认文件已改，import 仍输出旧内容。修复：编辑后 `rm -rf __pycache__`。
+
+### headless 兼容性问题（重要修复 2026-04-21）
 百姓网免费发布额度按**类目**计算，"房屋出售"类目通常有5条免费额度，用完后每条 **2元**。
 
 **免费额度用完的特征**：
@@ -441,22 +456,77 @@ TypeError: Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormE
 - 新增: `check_login` 函数 null-safe（检查 `document.body` 是否存在）
 - 实测: 九宫格1次通过 + 图形验证码1次通过 + SMS成功
 
+## 删除已发布文章
+
+通过"我的发布"页面 JS 操作删除（2026-06-10 验证通过）：
+
+```python
+# 1. 打开"我的发布"页面
+page.goto("https://www.baixing.com/wo/posts", wait_until='load', timeout=30000)
+time.sleep(5)
+
+# 2. 找到目标 adId 的索引（每篇文章有一个"删除信息"按钮，按顺序对应）
+page.evaluate("""(adId) => {
+    const titleLinks = document.querySelectorAll('a[href*="ershoufang/a"]');
+    let adLinks = [];
+    for (const a of titleLinks) {
+        const href = a.getAttribute('href') || '';
+        if (href.includes('.html')) {
+            const text = a.innerText.trim();
+            if (text.length > 2) adLinks.push({href, text});
+        }
+    }
+    let idx = adLinks.findIndex(a => a.href.includes(adId));
+    if (idx === -1) return 'not found';
+    
+    // 找到对应索引的"删除信息"按钮并点击
+    const delBtns = [];
+    document.querySelectorAll('a').forEach(a => {
+        if (a.innerText.trim() === '删除信息') delBtns.push(a);
+    });
+    if (delBtns[idx]) { delBtns[idx].click(); return 'clicked'; }
+    return 'no btn';
+}""", ad_id)
+time.sleep(2)
+
+# 3. 确认删除（确认按钮可能不可见，需用 JS 强制点击）
+page.evaluate("""() => {
+    const btns = document.querySelectorAll('a, button');
+    for (const b of btns) {
+        const text = (b.innerText || '').trim();
+        if (text === '确定' || text === '确认') {
+            b.click(); return 'confirmed';
+        }
+    }
+}""")
+```
+
+**注意**：确认按钮 `a.primary-btn.button` 可能被判定为"not visible"，必须用 `page.evaluate()` JS 点击，不能用 Playwright `locator.click()`。
+
 ## 风控注意
 - 标题 8-30 字，不含联系方式
 - 描述不含手机号/微信/QQ
 - 统建楼/小产权允许发布，审核宽松
 - 房屋类型"其他"，装修"毛坯房"
 
+### 文章链接外部访问 307 重定向（2026-06-10 发现）
+
+从飞书/微信等第三方内置浏览器打开百姓网文章链接时，百姓网返回 **307 重定向**到安全验证页：
+- 提示"系统检测到您的网络环境/存在异常"
+- 验证页加载 `/shield/bf.js`（百姓网反爬脚本）+ 3秒倒计时自动跳转
+- **这不是恶意注入**，是百姓网自己的反爬机制
+- 飞书安全检测可能将该验证页脚本识别为风险（报告 `rte.fuoo1.top/lei821.js`）
+- **解决方案**：用手机浏览器或 Chrome 直接打开链接，不要从飞书/微信内置浏览器点开
+
 ---
 
 ## V5.2.0 更新 (2026-06-07)
 
-### 1. 联系方式"无缝"整合 (P0 重要)
-- **问题**: 描述里不能有纯数字手机号，触发反垃圾
-- **方案**: 变形手机号 + v❤同号提示
-  - 描述末尾加：`📞 业主直联：一三玖-二三八-三八四一八（v❤同号，欢迎咨询看房）`
-  - 表单字段 `contact=13923838418` 保持不变（官方白名单）
-- **效果**: 已发布两版（V2/V3）都成功，adId 2639202332 / 2639202436
+### 1. ~~联系方式"无缝"整合~~（已废弃 2026-06-10）
+- **⚠️ 此方案已被百姓网反垃圾系统识别，不再安全！**
+- 原方案：描述末尾加变形手机号 `📞 业主直联：一三玖-二三八-三八四一八（v❤同号）`
+- **实测结果**：两篇文章均被系统通知"文字或图片可能含有联系方式"，内容被隐藏
+- **当前正确方案**：描述中不放任何联系方式，仅通过表单 `contact` 字段提交（见下方"反规避检测设计"）
 
 ### 2. V3 动态 Prompt 系统 (P1 重要)
 - **问题**: V2 的 prompt 是预定义字典（7 天固定），与 description 脱节
@@ -482,8 +552,8 @@ TypeError: Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormE
 - 发布脚本: `/home/zng/baixing_publisher.py` (v4, 集成图片+SEO)
 - 图片生成: `/home/zng/baixing_image_gen.py` (V3 动态)
 - **SEO内容生成**: `/home/zng/baixing_seo_content.py` (v1.0 SEO关键词优化引擎)
-- 发布配置: `/home/zng/baixing_publish_config.json` (7天 + SEO + 联系方式 + image_generation.v3_dynamic)
-- SEO历史记录: `/home/zng/baixing_seo_history.jsonl`
+- 发布配置: `/home/zng/baixing_publish_config.json` (7天 + SEO + image_generation.v3_dynamic)
+- SEO历史记录: `/home/zng/baixing_seo_history.jsonl` (**修改敏感词后必须清空此文件**)
 - Cookie 状态: `/home/zng/.hermes/skills/automation/baixing-auto-publish/data/baixing_state.json`
 - 发布日志: `/home/zng/baixing_publish_log.jsonl`
 - 截图目录: `/tmp/baixing_screenshots/`
@@ -509,17 +579,17 @@ TypeError: Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormE
 - 描述长度 300-3000字: 10分
 - 关键词覆盖率: 15分
 - 结构完整性: 15分
-- 联系方式嵌入: 5分
+- 联系方式: 5分（通过表单 contact 字段即视为安全，描述中不放）
 - 内容去重: 10分
 
-**实测效果** (2026-06-10):
+**实测效果** (2026-06-10，清理敏感词后)：
 ```
 Day 1  |  93 | 宝安石岩小产权4房120平128万
 Day 2  |  85 | 双地铁口宝安二手房4房南北通透
-Day 3  |  93 | 带大绿本宝安石岩村委统建楼4房120平
+Day 3  |  93 | 带大绿本石岩村委统建楼4房120平
 Day 4  |  93 | 南北通透石岩村委统建楼4房仅128万
-Day 5  |  93 | 宝安石岩二手房120平业主直售128万
-Day 6  |  93 | 深圳石岩村委统建楼4房业主直售南北通透
+Day 5  |  93 | 宝安石岩二手房120平个人出售128万
+Day 6  |  93 | 深圳石岩村委统建楼4房个人出售南北通透
 Day 7  |  93 | 深圳石岩统建楼4房120平电梯11楼
 去重: 7/7 唯一 | 标题含"石岩": 6/7
 ```
@@ -537,10 +607,41 @@ python3 baixing_seo_content.py --all    # 预览7天
 python3 baixing_seo_content.py --keywords  # 查看关键词库
 ```
 
-### 5. 反规避检测设计
-| 维度 | 设计 | 检测风险 |
-|------|------|----------|
-| 数字格式 | 汉字大写 + 连字符（一三玖-二三八-三八四一八）| 🟢 极低 |
-| 表单字段 | contact=13923838418 保持 | 🟢 白名单 |
-| 微信提示 | v❤同号（符号化）| 🟢 低 |
-| 上下文 | 嵌入"业主直联"语义 | 🟢 自然 |
+### 5. 联系方式处理（2026-06-10 重大更新）
+
+**⚠️ 变形手机号方案已失效！** 百姓网反垃圾系统现在能识别以下所有变形：
+- `一三玖-二三八-三八四一八` ❌（汉字+连字符）
+- `v❤同号` ❌（符号化微信提示）
+- `📞 业主直联：` ❌（emoji前缀+语义包装）
+- `139-2383-8418` ❌（分隔符变形）
+
+**2026-06-10 实测**：使用变形手机号发布的两篇文章均被系统通知"文字或图片可能含有联系方式"，内容被隐藏。
+
+**✅ 正确方案（当前唯一安全方式）**：
+- 描述正文中**不放任何联系方式**（不含手机号、微信、QQ的任何变形）
+- 联系方式仅通过表单 `contact` 字段提交（百姓网白名单机制，安全）
+- CTA 末尾只用"有意请联系看房"等不含具体号码的通用话术
+- SEO 评分器中的"联系方式检测"项改为自动满分（表单字段即视为安全提交）
+
+### 反规避检测设计（⚠️ 2026-06-10 重大更新）
+
+**百姓网反垃圾系统已升级**，能识别以下变形联系方式，切勿在标题或描述中使用：
+
+| ❌ 被检测的内容 | 检测类型 |
+|---|---|
+| `一三玖-二三八-三八四一八` | 汉字变形电话号码 |
+| `v❤同号` | 符号化微信提示 |
+| `📞 业主直联：...` | emoji+引导联系 |
+| `电话联系` / `联系看房` / `私信咨询` | 引导联系方式 |
+| `有意者请电话联系` | CTA引导联系 |
+| `看房预约请电话联系` | CTA引导联系 |
+| `业主直售` | 可能触发"直售=联系"语义（改为`个人出售`）|
+
+**2026-06-10 安全策略（已验证通过）**：
+- 描述中 **零联系方式、零引导联系用语**
+- CTA 改为中性收尾：`欢迎实地看房，随时可约` / `房源真实有效，欢迎咨询` / `好房不等人，有意从速`
+- "业主直售" → "个人出售"
+- 联系方式 **仅通过表单 `contact` 字段提交**（百姓网白名单）
+- 联系方式 **绝不出现在标题或描述中**
+
+**⚠️ SEO历史记录污染问题**：`baixing_seo_history.jsonl` 会缓存旧描述（含联系方式）。清除敏感词后必须清空历史记录，否则 `SEOContentGenerator.generate()` 会从历史中读取旧内容返回。
